@@ -1,0 +1,16 @@
+# Claude config
+.claude/
+
+# SQLite databases
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
