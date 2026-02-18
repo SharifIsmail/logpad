@@ -916,7 +916,7 @@ function renderSidebar() {
     renameBtn.textContent = '✎';
     renameBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      promptRenameTable(tbl.id, tbl.name);
+      startInlineSidebarRename(li, nameSpan, tbl.id, tbl.name);
     });
 
     const deleteBtn = document.createElement('button');
@@ -930,19 +930,11 @@ function renderSidebar() {
 
     li.append(nameSpan, renameBtn, deleteBtn);
 
-    // nameSpan handles its own click/dblclick; always stop propagation to li
-    let _nameClickTimer = null;
+    // Single click on nameSpan switches table instantly; li catches clicks outside nameSpan too
     nameSpan.addEventListener('click', (e) => {
       e.stopPropagation();
-      clearTimeout(_nameClickTimer);
-      _nameClickTimer = setTimeout(() => switchTable(tbl.id), 220);
+      switchTable(tbl.id);
     });
-    nameSpan.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      clearTimeout(_nameClickTimer);
-      startInlineSidebarRename(li, nameSpan, tbl.id, tbl.name);
-    });
-    // Clicking anywhere else on li (not nameSpan) still switches table
     li.addEventListener('click', () => switchTable(tbl.id));
     list.appendChild(li);
   }
