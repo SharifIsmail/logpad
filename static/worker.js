@@ -55,7 +55,26 @@ async function init_db() {
       await _create_fresh_schema();
     }
   }
-  // else: already migrated, nothing to do
+  // else: already migrated — run incremental migrations
+  await _run_incremental_migrations();
+}
+
+// Add new columns to existing schemas without breaking old data
+async function _run_incremental_migrations() {
+  // Migration: add col_type if missing
+  const colTypeMissing = await exec(
+    `SELECT COUNT(*) AS cnt FROM pragma_table_info('columns') WHERE name='col_type'`
+  );
+  if (colTypeMissing[0].cnt === 0) {
+    await exec(`ALTER TABLE columns ADD COLUMN col_type TEXT NOT NULL DEFAULT 'text'`);
+  }
+  // Migration: add col_choices if missing
+  const colChoicesMissing = await exec(
+    `SELECT COUNT(*) AS cnt FROM pragma_table_info('columns') WHERE name='col_choices'`
+  );
+  if (colChoicesMissing[0].cnt === 0) {
+    await exec(`ALTER TABLE columns ADD COLUMN col_choices TEXT`);
+  }
 }
 
 async function _create_fresh_schema() {
@@ -74,6 +93,8 @@ async function _create_fresh_schema() {
       name          TEXT    NOT NULL,
       display_order INTEGER NOT NULL DEFAULT 0,
       is_unique     INTEGER NOT NULL DEFAULT 0,
+      col_type      TEXT    NOT NULL DEFAULT 'text',
+      col_choices   TEXT,
       created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
       deleted_at    TEXT,
       UNIQUE(table_id, name)
@@ -124,6 +145,8 @@ async function _migrate_legacy_db() {
         name          TEXT    NOT NULL,
         display_order INTEGER NOT NULL DEFAULT 0,
         is_unique     INTEGER NOT NULL DEFAULT 0,
+        col_type      TEXT    NOT NULL DEFAULT 'text',
+        col_choices   TEXT,
         created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
         deleted_at    TEXT,
         UNIQUE(table_id, name)
@@ -317,15 +340,18 @@ async function delete_table({ id }) {
 // ---------------------------------------------------------------------------
 async function get_columns({ table_id }) {
   return exec(
-    `SELECT id, name, display_order, is_unique, created_at
+    `SELECT id, name, display_order, is_unique, col_type, col_choices, created_at
      FROM columns WHERE table_id = ? AND deleted_at IS NULL ORDER BY display_order, id`,
     [table_id]
   );
 }
 
-async function create_column({ table_id, name, is_unique = 0 }) {
+const VALID_COL_TYPES = ['text', 'number', 'boolean', 'date', 'datetime', 'url', 'select'];
+
+async function create_column({ table_id, name, is_unique = 0, col_type = 'text', col_choices = null }) {
   name = name.trim();
   if (!name) throw new Error('Column name cannot be empty');
+  if (!VALID_COL_TYPES.includes(col_type)) throw new Error(`Invalid column type: ${col_type}`);
   const [{ max_order }] = await exec(
     `SELECT COALESCE(MAX(display_order), -1) AS max_order FROM columns WHERE table_id = ? AND deleted_at IS NULL`,
     [table_id]
@@ -334,8 +360,8 @@ async function create_column({ table_id, name, is_unique = 0 }) {
   let id;
   try {
     id = await run(
-      `INSERT INTO columns (table_id, name, display_order, is_unique) VALUES (?, ?, ?, ?)`,
-      [table_id, name, display_order, is_unique]
+      `INSERT INTO columns (table_id, name, display_order, is_unique, col_type, col_choices) VALUES (?, ?, ?, ?, ?, ?)`,
+      [table_id, name, display_order, is_unique, col_type, col_choices]
     );
   } catch (e) {
     if (e.message && e.message.includes('UNIQUE')) {
@@ -343,7 +369,7 @@ async function create_column({ table_id, name, is_unique = 0 }) {
     }
     throw e;
   }
-  return { id, name, display_order, is_unique };
+  return { id, name, display_order, is_unique, col_type, col_choices };
 }
 
 async function rename_column({ id, name }) {
@@ -399,6 +425,17 @@ async function set_column_unique({ id, is_unique }) {
   }
   await exec(`UPDATE columns SET is_unique = ? WHERE id = ? AND deleted_at IS NULL`, [is_unique ? 1 : 0, id]);
   return { id, is_unique: is_unique ? 1 : 0 };
+}
+
+async function set_column_type({ id, col_type, col_choices = null }) {
+  if (!VALID_COL_TYPES.includes(col_type)) throw new Error(`Invalid column type: ${col_type}`);
+  const [col] = await exec(`SELECT id, name FROM columns WHERE id = ? AND deleted_at IS NULL`, [id]);
+  if (!col) throw new Error('Column not found');
+  await exec(
+    `UPDATE columns SET col_type = ?, col_choices = ? WHERE id = ? AND deleted_at IS NULL`,
+    [col_type, col_choices, id]
+  );
+  return { id, col_type, col_choices };
 }
 
 async function delete_column({ id }) {
@@ -745,6 +782,7 @@ const handlers = {
   create_column,
   rename_column,
   set_column_unique,
+  set_column_type,
   delete_column,
   // Row
   get_rows,
