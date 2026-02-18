@@ -5,6 +5,11 @@ import { h, render } from 'https://esm.sh/preact@10.25.4';
 import { useState, useEffect, useRef, useCallback } from 'https://esm.sh/preact@10.25.4/hooks';
 import { signal, computed, effect, batch } from 'https://esm.sh/@preact/signals@1.3.2?deps=preact@10.25.4';
 import htm from 'https://esm.sh/htm@3.1.1';
+import { Editor, rootCtx, defaultValueCtx } from 'https://esm.sh/@milkdown/kit@7.18.0/core';
+import { commonmark } from 'https://esm.sh/@milkdown/kit@7.18.0/preset/commonmark';
+import { nord } from 'https://esm.sh/@milkdown/theme-nord@7.18.0';
+import { listener, listenerCtx } from 'https://esm.sh/@milkdown/kit@7.18.0/plugin/listener';
+import { getMarkdown } from 'https://esm.sh/@milkdown/kit@7.18.0/utils';
 
 const html = htm.bind(h);
 
@@ -71,6 +76,9 @@ const renamingSidebar = signal(null);  // null | tableId
 
 // Column inline rename state
 const renamingCol     = signal(null);  // null | colId
+
+// Expanded markdown row (accordion — one at a time)
+const expandedRowId   = signal(null);  // null | rowId
 
 // Pending tab navigation: set before save+refresh, consumed after render
 let _pendingTabNav = null;
@@ -243,7 +251,7 @@ function relativeTime(date) {
 // ---------------------------------------------------------------------------
 // TYPE_LABELS — badges shown in column headers
 // ---------------------------------------------------------------------------
-const TYPE_LABELS = { number: '#', boolean: '✓', date: '📅', datetime: '🕐', url: '🔗', select: '▾' };
+const TYPE_LABELS = { number: '#', boolean: '✓', date: '📅', datetime: '🕐', url: '🔗', select: '▾', markdown: '📝' };
 
 // ---------------------------------------------------------------------------
 // Component: SidebarRenameInput
@@ -477,6 +485,75 @@ function getCellClass(colType, extraClass = '') {
 }
 
 // ---------------------------------------------------------------------------
+// Component: MarkdownExpander — inline Milkdown editor row
+// ---------------------------------------------------------------------------
+function MarkdownExpander({ row, mdCol, colCount }) {
+  const containerRef = useRef(null);
+  const editorRef    = useRef(null);
+  const saveTimerRef = useRef(null);
+  const rowId   = row.row_id;
+  const colName = mdCol.name;
+  const initialValue = row.cells[colName] ?? '';
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    let destroyed = false;
+
+    Editor.make()
+      .config((ctx) => {
+        ctx.set(rootCtx, el);
+        ctx.set(defaultValueCtx, initialValue);
+        ctx.get(listenerCtx).markdownUpdated((ctx, markdown) => {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = setTimeout(async () => {
+            try {
+              await API.updateRow(rowId, { [colName]: markdown });
+              // Don't call refresh() — it would destroy the editor mid-type
+              // Just silently update the in-memory row value
+              const r = rows.value.find(r => r.row_id === rowId);
+              if (r) r.cells[colName] = markdown;
+            } catch (err) {
+              toast(err.message);
+            }
+          }, 800);
+        });
+      })
+      .config(nord)
+      .use(commonmark)
+      .use(listener)
+      .create()
+      .then(editor => {
+        if (destroyed) { editor.destroy(); return; }
+        editorRef.current = editor;
+      })
+      .catch(err => {
+        if (!destroyed) toast('Editor error: ' + err.message);
+      });
+
+    return () => {
+      destroyed = true;
+      clearTimeout(saveTimerRef.current);
+      if (editorRef.current) {
+        editorRef.current.destroy();
+        editorRef.current = null;
+      }
+    };
+  // Run only when the row/column identity changes — not on every render
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowId, colName]);
+
+  return html`
+    <tr class="content-expander-row">
+      <td colspan=${colCount + 1} class="content-expander-td">
+        <div class="content-expander-inner" ref=${containerRef}></div>
+      </td>
+    </tr>
+  `;
+}
+
+// ---------------------------------------------------------------------------
 // Component: DataCell — handles both display and editing
 // ---------------------------------------------------------------------------
 function DataCell({ col, row, fkDef }) {
@@ -486,6 +563,9 @@ function DataCell({ col, row, fkDef }) {
   const colId = col.id;
   const colName = col.name;
   const rowId = row.row_id;
+
+  // Markdown columns are hidden from the table — they render in the expander row
+  if (colType === 'markdown') return null;
 
   // If this cell is in the pending tab nav target, auto-click it after mount
   const tdRef = useRef(null);
@@ -702,8 +782,14 @@ function EditingCell({ col, row, fkDef, rawValue, onDone, tdRef }) {
 // ---------------------------------------------------------------------------
 function DataRow({ row, colsList, fksList }) {
   const rowId = row.row_id;
-  const isActive = activeRowId.value === rowId;
+  const isActive   = activeRowId.value === rowId;
+  const isExpanded = expandedRowId.value === rowId;
   const trRef = useRef(null);
+
+  // Markdown columns hidden from normal cells — find them for the expander
+  const visibleCols  = colsList.filter(c => (c.col_type || 'text') !== 'markdown');
+  const markdownCols = colsList.filter(c => (c.col_type || 'text') === 'markdown');
+  const hasMdCol = markdownCols.length > 0;
 
   // Consume pending tab nav after render
   useEffect(() => {
@@ -722,17 +808,34 @@ function DataRow({ row, colsList, fksList }) {
     if (target) requestAnimationFrame(() => target.click());
   });
 
-  const openHistoryForRow = useCallback(() => {
+  const openHistoryForRow = useCallback((e) => {
+    e.stopPropagation();
     activeRowId.value = rowId;
     loadHistoryData(rowId);
   }, [rowId]);
 
-  const confirmDelete = useCallback(() => {
+  const confirmDelete = useCallback((e) => {
+    e.stopPropagation();
     modalState.value = { type: 'confirm', rowId };
   }, [rowId]);
 
+  // Row click (on the <tr> itself, not on cells) toggles expand
+  const handleRowClick = useCallback((e) => {
+    // Ignore if clicking an interactive element
+    if (e.target.closest('td.cell-editable, td.cell-fk, td.cell-stale-fk, td.cell-bool, td.actions-td, button, input, select, a')) return;
+    if (!hasMdCol) return;
+    expandedRowId.value = isExpanded ? null : rowId;
+  }, [isExpanded, rowId, hasMdCol]);
+
+  const rowClass = [
+    isActive ? 'active-history-row' : '',
+    hasMdCol ? 'row-expandable' : '',
+    isExpanded ? 'row-expanded' : '',
+  ].filter(Boolean).join(' ');
+
   return html`
-    <tr ref=${trRef} data-row-id=${rowId} class=${isActive ? 'active-history-row' : ''}>
+    <tr ref=${trRef} data-row-id=${rowId} class=${rowClass} onClick=${handleRowClick}>
+      ${hasMdCol ? html`<td class="expand-chevron-td" onClick=${handleRowClick}>${isExpanded ? '▾' : '▸'}</td>` : null}
       ${colsList.map(col => {
         const fkDef = fksList.find(fk => fk.from_column_id === col.id) ?? null;
         return html`<${DataCell} key=${col.id} col=${col} row=${row} fkDef=${fkDef} />`;
@@ -745,6 +848,14 @@ function DataRow({ row, colsList, fksList }) {
         <button class="btn-row-action danger" onClick=${confirmDelete}>Delete</button>
       </td>
     </tr>
+    ${isExpanded && markdownCols.map(mdCol => html`
+      <${MarkdownExpander}
+        key=${'expander-' + rowId + '-' + mdCol.id}
+        row=${row}
+        mdCol=${mdCol}
+        colCount=${visibleCols.length}
+      />
+    `)}
   `;
 }
 
@@ -757,7 +868,6 @@ function DataTable() {
   const displayRows = sortedFilteredRows.value;
   const allRows = rows.value;
   const tid = activeTableId.value;
-  const tbl = activeTable.value;
   const q = searchQuery.value;
 
   if (tid === null) {
@@ -772,6 +882,10 @@ function DataTable() {
       No columns defined yet. Click <strong>Manage Columns</strong> to add your first column.
     </div>`;
   }
+
+  // Markdown columns are hidden from headers — they appear in the expander row
+  const visibleCols = colsList.filter(c => (c.col_type || 'text') !== 'markdown');
+  const hasMdCols   = colsList.some(c => (c.col_type || 'text') === 'markdown');
 
   return html`
     <div>
@@ -805,7 +919,8 @@ function DataTable() {
         <table id="main-table">
           <thead>
             <tr>
-              ${colsList.map(col => {
+              ${hasMdCols ? html`<th class="expand-chevron-th" title="Click row to expand notes"></th>` : null}
+              ${visibleCols.map(col => {
                 const fkDef = fksList.find(fk => fk.from_column_id === col.id) ?? null;
                 return html`<${ColHeader} key=${col.id} col=${col} fkDef=${fkDef} />`;
               })}
@@ -933,7 +1048,7 @@ function ColManageModal({ onClose }) {
 
   const TYPE_OPTIONS = [
     ['text','Text'],['number','Number'],['boolean','Checkbox'],
-    ['date','Date'],['datetime','Date & Time'],['url','URL'],['select','Select']
+    ['date','Date'],['datetime','Date & Time'],['url','URL'],['select','Select'],['markdown','Markdown']
   ];
 
   const doAddColumn = async () => {
@@ -1007,7 +1122,7 @@ function ColItem({ col }) {
 
   const TYPE_OPTIONS = [
     ['text','Text'],['number','Number'],['boolean','Checkbox'],
-    ['date','Date'],['datetime','Date & Time'],['url','URL'],['select','Select']
+    ['date','Date'],['datetime','Date & Time'],['url','URL'],['select','Select'],['markdown','Markdown']
   ];
 
   const doRename = async () => {

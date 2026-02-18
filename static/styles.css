@@ -618,3 +618,75 @@ dialog::backdrop { background: rgba(0,0,0,0.4); }
 }
 .filter-bar input[type=text]:focus { outline: 2px solid #3b82f6; border-color: transparent; }
 .filter-bar-label { font-size: 12px; color: #64748b; }
+
+/* ============================================================
+   Markdown / Expander row
+   ============================================================ */
+
+/* Chevron column header */
+th.expand-chevron-th {
+  width: 24px;
+  padding: 0 4px;
+  background: #f1f5f9;
+}
+
+/* Chevron cell */
+td.expand-chevron-td {
+  width: 24px;
+  padding: 0 4px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Rows with markdown content get a subtle affordance */
+tr.row-expandable { cursor: default; }
+tr.row-expandable:hover td { background: #fafafa; }
+tr.row-expanded td { background: #f8fafc !important; }
+tr.row-expanded td.expand-chevron-td { color: #3b82f6; }
+
+/* The expander row itself */
+tr.content-expander-row { background: #f8fafc; }
+tr.content-expander-row:hover td { background: #f8fafc; }
+
+td.content-expander-td {
+  padding: 0;
+  border-bottom: 2px solid #e2e8f0;
+  border-top: none;
+  border-left: 4px solid #3b82f6;
+  background: #f0f7ff;
+}
+
+.content-expander-inner {
+  padding: 0;
+  min-height: 160px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* Milkdown overrides — keep it flush inside the expander */
+.content-expander-inner .milkdown,
+.content-expander-inner .milkdown-root {
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: #f0f7ff !important;
+  padding: 12px 20px !important;
+  font-size: 14px !important;
+  min-height: 140px !important;
+}
+
+/* Make ProseMirror fill the full space */
+.content-expander-inner .ProseMirror {
+  min-height: 120px;
+  outline: none !important;
+}
+
+/* Toolbar inside Crepe */
+.content-expander-inner .crepe-toolbar {
+  border-top: 1px solid #e2e8f0!important;
+  border-bottom: 1px solid #e2e8f0!important;
+  background: #f1f5f9 !important;
+}

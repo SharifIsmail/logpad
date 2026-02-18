@@ -346,7 +346,7 @@ async function get_columns({ table_id }) {
   );
 }
 
-const VALID_COL_TYPES = ['text', 'number', 'boolean', 'date', 'datetime', 'url', 'select'];
+const VALID_COL_TYPES = ['text', 'number', 'boolean', 'date', 'datetime', 'url', 'select', 'markdown'];
 
 async function create_column({ table_id, name, is_unique = 0, col_type = 'text', col_choices = null }) {
   name = name.trim();
